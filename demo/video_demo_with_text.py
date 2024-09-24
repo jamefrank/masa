@@ -1,31 +1,31 @@
+import os, sys
+sys.path.insert(0, os.getcwd())
+
+import warnings
+from utils import filter_and_update_tracks
+from masa.models.sam import SamPredictor, sam_model_registry
+from masa.apis import inference_masa, init_masa, inference_detector, build_test_pipeline
+import masa
+from mmcv.ops.nms import batched_nms
+from mmdet.registry import VISUALIZERS
+from mmdet.apis import init_detector
+from mmengine.utils import track_iter_progress
+from mmcv.transforms import Compose
+import mmcv
+from torch.multiprocessing import Pool, set_start_method
+import torch
+import tqdm
+import cv2
+import argparse
+import resource
+import gc
 import os
 import sys
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
-import gc
-import resource
-import argparse
-import cv2
-import tqdm
 
-import torch
-from torch.multiprocessing import Pool, set_start_method
-
-import mmcv
-from mmcv.transforms import Compose
-from mmengine.utils import track_iter_progress
-from mmdet.apis import init_detector
-from mmdet.registry import VISUALIZERS
-from mmcv.ops.nms import batched_nms
-
-import masa
-from masa.apis import inference_masa, init_masa, inference_detector, build_test_pipeline
-from masa.models.sam import SamPredictor, sam_model_registry
-from utils import filter_and_update_tracks
-
-import warnings
 warnings.filterwarnings('ignore')
 
 # Ensure the right start method for multiprocessing
@@ -34,12 +34,15 @@ try:
 except RuntimeError:
     pass
 
+
 def set_file_descriptor_limit(limit):
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     resource.setrlimit(resource.RLIMIT_NOFILE, (limit, hard))
 
+
 # Set the file descriptor limit to 65536
 set_file_descriptor_limit(65536)
+
 
 def visualize_frame(args, visualizer, frame, track_result, frame_idx, fps=None):
     visualizer.add_datasample(
@@ -55,22 +58,25 @@ def visualize_frame(args, visualizer, frame, track_result, frame_idx, fps=None):
     gc.collect()
     return frame
 
+
 def parse_args():
 
     parser = argparse.ArgumentParser(description='MASA video demo')
-    parser.add_argument('video', help='Video file')
-    parser.add_argument('--det_config', help='Detector Config file')
-    parser.add_argument('--masa_config', help='Masa Config file')
-    parser.add_argument('--det_checkpoint', help='Detector Checkpoint file')
-    parser.add_argument('--masa_checkpoint', help='Masa Checkpoint file')
-    parser.add_argument( '--device', default='cuda:0', help='Device used for inference')
-    parser.add_argument('--score-thr', type=float, default=0.2, help='Bbox score threshold')
-    parser.add_argument('--out', type=str, help='Output video file')
+    parser.add_argument('video', help='Video file', default='demo/giraffe_short.mp4', nargs='?')
+    parser.add_argument('--det_config', help='Detector Config file', default='projects/mmdet_configs/yolox/yolox_x_8xb8-300e_coco.py')
+    parser.add_argument('--masa_config', help='Masa Config file', default='configs/masa-one/masa_r50_plug_and_play.py')
+    parser.add_argument('--det_checkpoint', help='Detector Checkpoint file',
+                        default='saved_models/pretrain_weights/yolox_x_8x8_300e_coco_20211126_140254-1ef88d67.pth')
+    parser.add_argument('--masa_checkpoint', help='Masa Checkpoint file', default='saved_models/masa_models/masa_r50.pth')
+    parser.add_argument('--device', default='cuda:0', help='Device used for inference')
+    parser.add_argument('--score-thr', type=float, default=0.3, help='Bbox score threshold')
+    parser.add_argument('--out', type=str, help='Output video file', default='demo_outputs/giraffe_short_outputs.mp4')
     parser.add_argument('--save_dir', type=str, help='Output for video frames')
     parser.add_argument('--texts', help='text prompt')
     parser.add_argument('--line_width', type=int, default=5, help='Line width')
     parser.add_argument('--unified', action='store_true', help='Use unified model, which means the masa adapter is built upon the detector model.')
     parser.add_argument('--detector_type', type=str, default='mmdet', help='Choose detector type')
+    # parser.add_argument('--detector_type', type=str, default='yoloworld', help='Choose detector type')
     parser.add_argument('--fp16', action='store_true', help='Activation fp16 mode')
     parser.add_argument('--no-post', action='store_true', help='Do not post-process the results ')
     parser.add_argument('--show_fps', action='store_true', help='Visualize the fps')
@@ -84,6 +90,7 @@ def parse_args():
         help='The interval of show (s), 0 is block')
     args = parser.parse_args()
     return args
+
 
 def main():
     args = parse_args()
@@ -111,7 +118,7 @@ def main():
     video_reader = mmcv.VideoReader(args.video)
     video_writer = None
 
-    #### parsing the text input
+    # parsing the text input
     texts = args.texts
     if texts is not None:
         masa_test_pipeline = build_test_pipeline(masa_model.cfg, with_text=True)
@@ -121,6 +128,7 @@ def main():
     if texts is not None:
         masa_model.cfg.visualizer['texts'] = texts
     else:
+        tmp = det_model.dataset_meta['classes']
         masa_model.cfg.visualizer['texts'] = det_model.dataset_meta['classes']
 
     # init visualizer
@@ -161,6 +169,8 @@ def main():
                                             text_prompt=texts,
                                             test_pipeline=test_pipeline,
                                             fp16=args.fp16)
+            elif args.detector_type == 'yoloworld':
+                pass
 
             # Perfom inter-class NMS to remove nosiy detections
             det_bboxes, keep_idx = batched_nms(boxes=result.pred_instances.bboxes,
@@ -168,13 +178,13 @@ def main():
                                                idxs=result.pred_instances.labels,
                                                class_agnostic=True,
                                                nms_cfg=dict(type='nms',
-                                                             iou_threshold=0.5,
-                                                             class_agnostic=True,
-                                                             split_thr=100000))
+                                                            iou_threshold=0.5,
+                                                            class_agnostic=True,
+                                                            split_thr=100000))
 
             det_bboxes = torch.cat([det_bboxes,
-                                            result.pred_instances.scores[keep_idx].unsqueeze(1)],
-                                               dim=1)
+                                    result.pred_instances.scores[keep_idx].unsqueeze(1)],
+                                   dim=1)
             det_labels = result.pred_instances.labels[keep_idx]
 
             track_result = inference_masa(masa_model, frame, frame_id=frame_idx,
@@ -189,7 +199,7 @@ def main():
 
         frame_idx += 1
         if 'masks' in track_result[0].pred_track_instances:
-            if len(track_result[0].pred_track_instances.masks) >0:
+            if len(track_result[0].pred_track_instances.masks) > 0:
                 track_result[0].pred_track_instances.masks = torch.stack(track_result[0].pred_track_instances.masks, dim=0)
                 track_result[0].pred_track_instances.masks = track_result[0].pred_track_instances.masks.cpu().numpy()
 
@@ -207,7 +217,8 @@ def main():
         for idx, (frame, track_result) in tqdm.tqdm(enumerate(zip(frames, instances_list))):
             track_result = track_result.to(device)
             track_result[0].pred_track_instances.instances_id = track_result[0].pred_track_instances.instances_id.to(device)
-            track_result[0].pred_track_instances = track_result[0].pred_track_instances[(track_result[0].pred_track_instances.scores.float() > args.score_thr).to(device)]
+            track_result[0].pred_track_instances = track_result[0].pred_track_instances[(
+                track_result[0].pred_track_instances.scores.float() > args.score_thr).to(device)]
             input_boxes = track_result[0].pred_track_instances.bboxes
             if len(input_boxes) == 0:
                 continue
@@ -222,8 +233,6 @@ def main():
             track_result[0].pred_track_instances.masks = masks.squeeze(1).cpu().numpy()
             instances_list[idx] = track_result
 
-
-
     if args.out:
         print('Start to visualize the results...')
         num_cores = max(1, min(os.cpu_count() - 1, 16))
@@ -233,7 +242,8 @@ def main():
             with Pool(processes=num_cores) as pool:
 
                 frames = pool.starmap(
-                    visualize_frame, [(args, visualizer, frame, track_result.to('cpu'), idx, fps) for idx, (frame, fps, track_result) in enumerate(zip(frames, fps_list, instances_list))]
+                    visualize_frame, [(args, visualizer, frame, track_result.to('cpu'), idx, fps)
+                                      for idx, (frame, fps, track_result) in enumerate(zip(frames, fps_list, instances_list))]
                 )
         else:
             with Pool(processes=num_cores) as pool:
